@@ -1,0 +1,45 @@
+# Lift Monitoring System Configuration
+
+# Camera settings
+camera:
+  source: 0  # 0 for default webcam, or path to video file
+  width: 1280
+  height: 720
+  fps: 30
+
+# Detection settings
+detection:
+  confidence_threshold: 0.5  # Minimum confidence score for person detection
+  nms_threshold: 0.4  # Non-Maximum Suppression threshold
+  model: "yolov8n.pt"  # YOLOv8 model to use (nano version for speed)
+  classes: [0]  # 0 is the class ID for 'person' in COCO dataset
+
+# Zone configuration
+zones:
+  left_zone:  # Left side of the lift (incorrect side)
+    x1: 0
+    x2: 640  # Middle of 1280 width
+    y1: 0
+    y2: 720
+  right_zone:  # Right side of the lift (correct side)
+    x1: 640
+    x2: 1280
+    y1: 0
+    y2: 720
+
+# Alert settings
+alerts:
+  max_capacity: 6  # Maximum number of people allowed in the lift
+  visual:
+    enabled: true
+    font_scale: 1.0
+    font_thickness: 2
+    text_color: [0, 255, 0]  # BGR format
+    warning_color: [0, 0, 255]  # Red for warnings
+
+# Display settings
+display:
+  show_fps: true
+  show_zone_lines: true
+  zone_line_color: [0, 255, 0]  # Green lines
+  zone_line_thickness: 2

@@ -1,0 +1,6 @@
+opencv-python>=4.5.1
+numpy>=1.19.3
+ultralytics>=8.0.0  # For YOLOv8
+pygame>=2.0.1  # For audio alerts
+pyyaml>=6.0  # For configuration file handling
+imutils>=0.5.4  # For image processing utilities
