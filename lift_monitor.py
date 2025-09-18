@@ -68,18 +68,25 @@ class LiftMonitor:
         left_text_x = (left_zone['x1'] + left_zone['x2'] - left_text_size[0]) // 2
         left_text_y = 50  # 50 pixels from top
         
-        # Draw semi-transparent background for better text visibility
+        # Calculate background rectangle dimensions for left zone
+        bg_padding = 10
+        bg_x1 = left_zone['x1']
+        bg_y1 = left_text_y - left_text_size[1] - bg_padding
+        bg_x2 = left_zone['x2']
+        bg_y2 = left_text_y + bg_padding
+        
+        # Draw semi-transparent background for left zone label
         overlay = frame.copy()
         cv2.rectangle(overlay, 
-                     (left_zone['x1'], 10), 
-                     (left_zone['x2'], 10 + left_text_size[1] + 20), 
+                     (bg_x1, bg_y1), 
+                     (bg_x2, bg_y2), 
                      (0, 0, 0), -1)
         alpha = 0.6  # Transparency factor
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         
-        # Draw the text
+        # Draw the left zone text
         cv2.putText(frame, left_text, 
-                   (left_text_x, left_text_y + left_text_size[1]), 
+                   (left_text_x, left_text_y), 
                    font, font_scale, (0, 0, 255), font_thickness)
         
         # Right zone label (Correct)
@@ -87,17 +94,23 @@ class LiftMonitor:
         right_text_size = cv2.getTextSize(right_text, font, font_scale, font_thickness)[0]
         right_text_x = (right_zone['x1'] + right_zone['x2'] - right_text_size[0]) // 2
         
-        # Draw semi-transparent background for better text visibility
+        # Calculate background rectangle dimensions for right zone
+        bg_x1 = right_zone['x1']
+        bg_y1 = left_text_y - right_text_size[1] - bg_padding
+        bg_x2 = right_zone['x2']
+        bg_y2 = left_text_y + bg_padding
+        
+        # Draw semi-transparent background for right zone label
         overlay = frame.copy()
         cv2.rectangle(overlay, 
-                     (right_zone['x1'], 10), 
-                     (right_zone['x2'], 10 + right_text_size[1] + 20), 
+                     (bg_x1, bg_y1), 
+                     (bg_x2, bg_y2), 
                      (0, 0, 0), -1)
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         
-        # Draw the text
+        # Draw the right zone text
         cv2.putText(frame, right_text, 
-                   (right_text_x, left_text_y + right_text_size[1]), 
+                   (right_text_x, left_text_y), 
                    font, font_scale, (0, 255, 0), font_thickness)
     
     def _process_detections(self, frame: np.ndarray, results) -> Tuple[int, int]:
@@ -133,43 +146,35 @@ class LiftMonitor:
                 label = "Wrong Side"
                 wrong_side += 1
             
-            # Draw bounding box with thicker border and rounded corners
-            box_thickness = 3
-            corner_radius = 10
+            # Draw a square around the detection
+            size = max(x2 - x1, y2 - y1)  # Use the larger dimension
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            half_size = size // 2
             
-            # Draw main rectangle with rounded corners
-            cv2.rectangle(frame, (x1 + corner_radius, y1), 
-                         (x2 - corner_radius, y2), color, box_thickness)
-            cv2.rectangle(frame, (x1, y1 + corner_radius), 
-                         (x1 + corner_radius, y2 - corner_radius), color, -1)
-            cv2.rectangle(frame, (x2 - corner_radius, y1 + corner_radius), 
-                         (x2, y2 - corner_radius), color, -1)
+            # Calculate square coordinates
+            x1_sq = max(0, center_x - half_size)
+            y1_sq = max(0, center_y - half_size)
+            x2_sq = min(frame.shape[1] - 1, center_x + half_size)
+            y2_sq = min(frame.shape[0] - 1, center_y + half_size)
             
-            # Draw corner circles for rounded effect
-            cv2.circle(frame, (x1 + corner_radius, y1 + corner_radius), 
-                      corner_radius, color, box_thickness)
-            cv2.circle(frame, (x2 - corner_radius, y1 + corner_radius), 
-                      corner_radius, color, box_thickness)
-            cv2.circle(frame, (x1 + corner_radius, y2 - corner_radius), 
-                      corner_radius, color, box_thickness)
-            cv2.circle(frame, (x2 - corner_radius, y2 - corner_radius), 
-                      corner_radius, color, box_thickness)
+            # Draw the square with the appropriate color
+            cv2.rectangle(frame, 
+                         (int(x1_sq), int(y1_sq)), 
+                         (int(x2_sq), int(y2_sq)), 
+                         color,  # Green for correct, Red for wrong
+                         3)  # Thickness
             
             # Add label with background for better visibility
             label_text = f"PERSON - {label.upper()}"
             (text_width, text_height), _ = cv2.getTextSize(
                 label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             
-            # Draw background rectangle for text
+            # Draw background rectangle for text (above the square)
             cv2.rectangle(frame, 
-                         (x1, y1 - text_height - 15), 
-                         (x1 + text_width + 10, y1 - 5), 
+                         (x1, max(0, y1 - text_height - 15)), 
+                         (x1 + text_width + 10, max(0, y1 - 5)), 
                          color, -1)
-            
-            # Draw text
-            cv2.putText(frame, label_text, 
-                       (x1 + 5, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
             # Add to people in lift
             self.people_in_lift.append({
@@ -179,6 +184,7 @@ class LiftMonitor:
             })
         
         return correct_side, wrong_side
+    
     
     def _check_capacity(self, frame: np.ndarray) -> None:
         """Check if lift capacity is exceeded and trigger alerts if needed."""
@@ -198,11 +204,14 @@ class LiftMonitor:
         """Main loop for the lift monitoring system with frame skipping for better performance."""
         prev_time = 0
         
+        print("Starting lift monitoring system...")
+        
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 print("Failed to capture frame")
                 break
+            
             
             display_frame = frame.copy()
             
@@ -233,11 +242,37 @@ class LiftMonitor:
                 fps = 1 / (current_time - prev_time) if prev_time > 0 else 0
                 prev_time = current_time
                 
-                # Show FPS and processing info
-                cv2.putText(display_frame, f"FPS: {int(fps)}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.putText(display_frame, f"Frame Skip: {self.frame_skip}x", (10, 70),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                # Show FPS and frame skip in bottom left corner with semi-transparent background
+                font_scale = 0.7
+                thickness = 2
+                margin = 10
+                
+                # Get text sizes for background
+                fps_text = f"FPS: {int(fps)}"
+                skip_text = f"Frame Skip: {self.frame_skip}x"
+                (fps_width, fps_height), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                (skip_width, skip_height), _ = cv2.getTextSize(skip_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                
+                # Calculate positions (bottom right)
+                text_x = display_frame.shape[1] - max(fps_width, skip_width) - margin
+                text_y1 = display_frame.shape[0] - margin - skip_height - 5  # Skip text
+                text_y2 = display_frame.shape[0] - margin  # FPS text
+                
+                # Draw semi-transparent background
+                overlay = display_frame.copy()
+                bg_x1 = text_x - 5
+                bg_y1 = text_y1 - fps_height - 5
+                bg_x2 = display_frame.shape[1] - margin + 5
+                bg_y2 = text_y2 + 5
+                cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+                alpha = 0.6  # Transparency factor
+                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
+                
+                # Draw FPS and frame skip text
+                cv2.putText(display_frame, fps_text, (text_x, text_y2),
+                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
+                cv2.putText(display_frame, skip_text, (text_x, text_y1),
+                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
             
             # Display status
             total_people = correct_side + wrong_side
@@ -245,22 +280,27 @@ class LiftMonitor:
             cv2.putText(display_frame, status_text, (10, display_frame.shape[0] - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
-            # Show the frame
-            cv2.imshow("Lift Monitoring System", display_frame)
-            
-            # Handle keyboard input
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                break
-            elif key == ord('+'):  # Increase frame skip
-                self.frame_skip = min(3, self.frame_skip + 1)
-                print(f"Frame skip set to: {self.frame_skip}")
-            elif key == ord('-'):  # Decrease frame skip
-                self.frame_skip = max(1, self.frame_skip - 1)
-                print(f"Frame skip set to: {self.frame_skip}")
-            
-            # Exit on 'q' press
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Ensure we have a valid frame to display
+            if display_frame is not None and display_frame.size > 0:
+                # Show the frame in the main window
+                cv2.imshow("Lift Monitoring System", display_frame)
+                
+                # Check if window is still open
+                if cv2.getWindowProperty("Lift Monitoring System", cv2.WND_PROP_VISIBLE) < 1:
+                    break
+                    
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                elif key == ord('+'):  # Increase frame skip
+                    self.frame_skip = min(3, self.frame_skip + 1)
+                    print(f"Frame skip set to: {self.frame_skip}")
+                elif key == ord('-'):  # Decrease frame skip
+                    self.frame_skip = max(1, self.frame_skip - 1)
+                    print(f"Frame skip set to: {self.frame_skip}")
+            else:
+                print("Error: Invalid frame to display")
                 break
         
         # Clean up
