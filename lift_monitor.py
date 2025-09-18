@@ -266,8 +266,7 @@ class LiftMonitor:
         # Clean up
         self.cap.release()
         cv2.destroyAllWindows()
-        if self.config['alerts']['audio']['enabled']:
-            pygame.quit()
+        
 
 if __name__ == "__main__":
     monitor = LiftMonitor()
