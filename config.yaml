@@ -29,7 +29,7 @@ zones:
 
 # Alert settings
 alerts:
-  max_capacity: 6  # Maximum number of people allowed in the lift
+  max_capacity: 1  # Maximum number of people allowed in the lift
   visual:
     enabled: true
     font_scale: 1.0
@@ -43,3 +43,10 @@ display:
   show_zone_lines: true
   zone_line_color: [0, 255, 0]  # Green lines
   zone_line_thickness: 2
+
+# Performance settings
+performance:
+  # Number of threads for OpenCV and PyTorch (null = auto-detect)
+  # Auto-detection uses 75% of available CPU cores
+  num_threads: null  # Set to a specific number (e.g., 4) to override auto-detection
+  enable_opencv_optimizations: true
