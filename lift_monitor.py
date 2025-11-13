@@ -9,24 +9,23 @@ from ultralytics import YOLO
 from typing import Dict, List, Tuple, Optional
 
 class LiftMonitor:
-    def __init__(self, config_path: str = "config.yaml", num_threads: int = None):
+    def __init__(self, config_path: str = "config.yaml"):
         """Initialize the Lift Monitoring System.
         
         Args:
             config_path: Path to configuration file
-            num_threads: Number of threads to use (None = auto-detect based on CPU cores)
         """
         # Load configuration
         self.config = self._load_config(config_path)
         
-        # Configure multithreading
-        self._setup_multithreading(num_threads)
-        
         # Initialize camera
         self.cap = self._initialize_camera()
         
-        # Load YOLO model
+        # Load YOLO model (must be done before setting threads)
         self.model = YOLO(self.config['detection']['model'])
+        
+        # Configure multithreading (after model is loaded)
+        self._setup_multithreading(initial_setup=True)
         
         # Track people
         self.people_in_lift = []
@@ -39,17 +38,14 @@ class LiftMonitor:
         self.last_detections = []
         self.last_boxes = []  # Store boxes for smooth display
     
-    def _setup_multithreading(self, num_threads: int = None) -> None:
+    def _setup_multithreading(self, initial_setup: bool = False) -> None:
         """Configure multithreading for OpenCV and PyTorch.
         
         Args:
-            num_threads: Number of threads to use (None = auto-detect)
+            initial_setup: If True, will also set PyTorch interop threads (can only be done once)
         """
-        # Auto-detect optimal thread count if not specified
-        if num_threads is None:
-            num_threads = os.cpu_count()
-            # Use 75% of available cores for better system responsiveness
-            num_threads = max(1, int(num_threads * 0.75))
+        # Use 75% of available cores for better system responsiveness
+        num_threads = max(1, int(os.cpu_count() * 0.75))
         
         print(f"Configuring multithreading with {num_threads} threads...")
         
@@ -58,10 +54,19 @@ class LiftMonitor:
         print(f"OpenCV threads set to: {cv2.getNumThreads()}")
         
         # Configure PyTorch threading
-        torch.set_num_threads(num_threads)
-        torch.set_num_interop_threads(num_threads)
-        print(f"PyTorch intra-op threads: {torch.get_num_threads()}")
-        print(f"PyTorch inter-op threads: {torch.get_num_interop_threads()}")
+        try:
+            torch.set_num_threads(num_threads)
+            
+            # Interop threads can only be set once, before any parallel work starts
+            if initial_setup or not hasattr(self, '_pytorch_initialized'):
+                torch.set_num_interop_threads(num_threads)
+                self._pytorch_initialized = True
+                
+            print(f"PyTorch intra-op threads: {torch.get_num_threads()}")
+            print(f"PyTorch inter-op threads: {torch.get_num_interop_threads()}")
+        except RuntimeError as e:
+            print(f"Warning: Could not set PyTorch threads: {e}")
+            print("Continuing with current thread configuration...")
         
         # Enable OpenCV optimizations
         cv2.setUseOptimized(True)
@@ -282,124 +287,114 @@ class LiftMonitor:
             current_time = time.time()
             self.last_alert_time = current_time
     
+    def _process_frame(self, frame):
+        """Process a single frame for detection and drawing."""
+        display_frame = frame.copy()
+        
+        # Process only every N-th frame (frame skipping)
+        if self.frame_count % self.frame_skip == 0:
+            # Process frame with YOLO
+            results = self.model(frame, verbose=False)
+
+            # Process detections (stores boxes in self.last_boxes)
+            correct_side, wrong_side = self._process_detections(frame, results)
+            self.last_detections = (correct_side, wrong_side)
+        else:
+            # Use detections from the last processed frame
+            correct_side, wrong_side = self.last_detections if hasattr(self, 'last_detections') else (0, 0)
+        
+        # Draw UI elements
+        self._draw_zone_lines(display_frame)
+        self._draw_boxes(display_frame)
+        self._check_capacity(display_frame)
+        
+        # Increment frame counter
+        self.frame_count += 1
+        
+        return display_frame, correct_side, wrong_side
+
+    def cleanup(self):
+        """Release resources and clean up."""
+        if hasattr(self, 'cap') and self.cap.isOpened():
+            self.cap.release()
+        cv2.destroyAllWindows()
+        print("Resources cleaned up")
+
     def run(self):
-        """Main loop for the lift monitoring system with frame skipping for better performance."""
-        prev_time = 0
-        
-        print("Starting lift monitoring system...")
-        
-        while True:
-            ret, frame = self.cap.read()
-            if not ret:
-                print("Failed to capture frame")
-                break
+        """Run the main application loop."""
+        try:
+            prev_time = time.time()
+            self.prev_time = prev_time  # Store as instance variable for FPS calculation
             
-            
-            display_frame = frame.copy()
-            
-            # Process only every N-th frame (frame skipping)
-            if self.frame_count % self.frame_skip == 0:
-                # Process frame with YOLO
-                results = self.model(frame, verbose=False)
+            while True:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("Failed to capture frame")
+                    break
                 
-                # Process detections (stores boxes in self.last_boxes)
-                correct_side, wrong_side = self._process_detections(frame, results)
-                self.last_detections = (correct_side, wrong_side)
-            else:
-                # Use detections from the last processed frame
-                correct_side, wrong_side = self.last_detections if hasattr(self, 'last_detections') else (0, 0)
-            
-            # Always draw UI elements for smooth display
-            self._draw_zone_lines(display_frame)
-            
-            # Always draw boxes (even on skipped frames) for smooth display
-            self._draw_boxes(display_frame)
-            
-            # Check capacity and trigger alerts (using the latest detections)
-            self._check_capacity(display_frame)
-            
-            # Increment frame counter
-            self.frame_count += 1
-            
-            # Display FPS with frame skipping info
-            if self.config['display']['show_fps']:
+                # Process the frame
+                display_frame, correct_side, wrong_side = self._process_frame(frame)
+                
+                # Calculate FPS
                 current_time = time.time()
-                fps = 1 / (current_time - prev_time) if prev_time > 0 else 0
+                fps = 1 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
                 prev_time = current_time
                 
-                # Show FPS and frame skip in bottom left corner with semi-transparent background
-                font_scale = 0.7
-                thickness = 2
-                margin = 10
+                # Display FPS and other info
+                if self.config['display']['show_fps']:
+                    font_scale = 0.7
+                    thickness = 2
+                    
+                    # Prepare text
+                    fps_text = f"FPS: {int(fps)}"
+                    skip_text = f"Frame Skip: {self.frame_skip}x"
+                    thread_text = f"Threads: {torch.get_num_threads()}"
+                    
+                    # Draw FPS and settings info
+                    y_offset = 30
+                    # Draw FPS and settings info
+                    y_offset = 30
+                    cv2.putText(display_frame, fps_text, (10, y_offset), 
+                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
+                    cv2.putText(display_frame, skip_text, (10, y_offset + 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
+                    cv2.putText(display_frame, thread_text, (10, y_offset + 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 128, 0), thickness)
                 
-                # Get text sizes for background
-                fps_text = f"FPS: {int(fps)}"
-                skip_text = f"Frame Skip: {self.frame_skip}x"
-                thread_text = f"Threads: {self.num_threads}"
-                (fps_width, fps_height), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                (skip_width, skip_height), _ = cv2.getTextSize(skip_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                (thread_width, thread_height), _ = cv2.getTextSize(thread_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                # Display status
+                total_people = correct_side + wrong_side
+                status_text = f"People: {total_people} (Correct: {correct_side}, Wrong: {wrong_side})"
+                cv2.putText(display_frame, status_text, (10, display_frame.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 
-                # Calculate positions (bottom right)
-                text_x = display_frame.shape[1] - max(fps_width, skip_width, thread_width) - margin
-                text_y1 = display_frame.shape[0] - margin - skip_height - thread_height - 10  # Thread text
-                text_y2 = display_frame.shape[0] - margin - skip_height - 5  # Skip text
-                text_y3 = display_frame.shape[0] - margin  # FPS text
-                
-                # Draw semi-transparent background
-                overlay = display_frame.copy()
-                bg_x1 = text_x - 5
-                bg_y1 = text_y1 - fps_height - 5
-                bg_x2 = display_frame.shape[1] - margin + 5
-                bg_y2 = text_y3 + 5
-                cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
-                alpha = 0.6  # Transparency factor
-                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
-                
-                # Draw FPS, frame skip, and thread count text
-                cv2.putText(display_frame, fps_text, (text_x, text_y3),
-                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
-                cv2.putText(display_frame, skip_text, (text_x, text_y2),
-                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), thickness)
-                cv2.putText(display_frame, thread_text, (text_x, text_y1),
-                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 128, 0), thickness)
-            
-            # Display status
-            total_people = correct_side + wrong_side
-            status_text = f"People: {total_people} (Correct: {correct_side}, Wrong: {wrong_side})"
-            cv2.putText(display_frame, status_text, (10, display_frame.shape[0] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Ensure we have a valid frame to display
-            if display_frame is not None and display_frame.size > 0:
-                # Show the frame in the main window
+                # Show the frame
                 cv2.imshow("Lift Monitoring System", display_frame)
                 
-                # Check if window is still open
-                if cv2.getWindowProperty("Lift Monitoring System", cv2.WND_PROP_VISIBLE) < 1:
-                    break
-                    
                 # Handle keyboard input
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
-                elif key == ord('+'):  # Increase frame skip
-                    self.frame_skip = min(3, self.frame_skip + 1)
-                    print(f"Frame skip set to: {self.frame_skip}")
-                elif key == ord('-'):  # Decrease frame skip
-                    self.frame_skip = max(1, self.frame_skip - 1)
-                    print(f"Frame skip set to: {self.frame_skip}")
-            else:
-                print("Error: Invalid frame to display")
-                break
-        
-        # Clean up
-        self.cap.release()
-        cv2.destroyAllWindows()
-        
+                elif key == ord('f'):  # Cycle frame skipping between 1x, 2x, and 3x
+                    self.frame_skip = (self.frame_skip % 3) + 1
+                    print(f"Frame skip set to: {self.frame_skip}x")
+                
+                # Check if window is still open
+                if cv2.getWindowProperty("Lift Monitoring System", cv2.WND_PROP_VISIBLE) < 1:
+                    break
+
+        except KeyboardInterrupt:
+            print("\nStopping...")
+        finally:
+            self.cleanup()
 
 if __name__ == "__main__":
     # You can specify custom number of threads or leave as None for auto-detection
     # Example: monitor = LiftMonitor(num_threads=4)
     monitor = LiftMonitor(num_threads=None)  # Auto-detect optimal thread count
+    print("Controls:")
+    print("  'm' - Toggle OpenMP multithreading")
+    print("  'f'  - Toggle frame skipping (1/2)")
+    print("  'q'  - Quit")
+    
+    # Start the main loop
     monitor.run()
